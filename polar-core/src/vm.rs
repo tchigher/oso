@@ -905,80 +905,6 @@ impl PolarVirtualMachine {
         );
 
         match (&left.value(), &right.value()) {
-            (Value::List(left), Value::List(right)) => {
-                self.unify_lists(left, right, |(left, right)| Goal::Isa {
-                    left: left.clone(),
-                    right: right.clone(),
-                })?;
-            }
-
-            (Value::Dictionary(left), Value::Pattern(Pattern::Dictionary(right))) => {
-                // Check that the left is more specific than the right.
-                let left_fields: HashSet<&Symbol> = left.fields.keys().collect();
-                let right_fields: HashSet<&Symbol> = right.fields.keys().collect();
-                if !right_fields.is_subset(&left_fields) {
-                    return self.push_goal(Goal::Backtrack);
-                }
-
-                // For each field on the right, isa its value against the corresponding value on
-                // the left.
-                for (k, v) in right.fields.iter() {
-                    let left = left
-                        .fields
-                        .get(&k)
-                        .expect("left fields should be a superset of right fields")
-                        .clone();
-                    self.push_goal(Goal::Isa {
-                        left,
-                        right: v.clone(),
-                    })?
-                }
-            }
-
-            (Value::InstanceLiteral(_), _) => {
-                panic!("How did an instance literal get here???");
-            }
-
-            (Value::ExternalInstance(_), Value::Pattern(Pattern::Dictionary(right))) => {
-                // For each field in the dict, look up the corresponding field on the instance and
-                // then isa them.
-                for (field, right_value) in right.fields.iter() {
-                    let left_value = self.kb.read().unwrap().gensym("isa_value");
-                    let call_id = self.new_call_id(&left_value);
-                    let lookup = Goal::LookupExternal {
-                        instance: left.clone(),
-                        call_id,
-                        field: right_value.clone_with_value(Value::String(field.0.clone())),
-                        check_errors: false,
-                    };
-                    let isa = Goal::Isa {
-                        left: left.clone_with_value(Value::Variable(left_value)),
-                        right: right_value.clone(),
-                    };
-                    self.append_goals(vec![lookup, isa])?;
-                }
-            }
-
-            (Value::Partial(partial), _) => {
-                let mut partial = partial.clone();
-
-                let compatibility = partial.isa(right.clone());
-
-                let name = partial.name().clone();
-
-                // Run compatibility check
-                self.choose_conditional(
-                    vec![Goal::Run {
-                        runnable: compatibility,
-                    }],
-                    vec![Goal::Bind {
-                        var: name,
-                        value: partial.into_term(),
-                    }],
-                    vec![Goal::Backtrack],
-                )?;
-            }
-
             (Value::Variable(symbol), _) => {
                 if let Some(value) = self.value(&symbol).cloned() {
                     self.push_goal(Goal::Isa {
@@ -1005,6 +931,26 @@ impl PolarVirtualMachine {
                         right: right.clone(),
                     })?;
                 }
+            }
+
+            (Value::Partial(partial), _) => {
+                let mut partial = partial.clone();
+
+                let compatibility = partial.isa(right.clone());
+
+                let name = partial.name().clone();
+
+                // Run compatibility check
+                self.choose_conditional(
+                    vec![Goal::Run {
+                        runnable: compatibility,
+                    }],
+                    vec![Goal::Bind {
+                        var: name,
+                        value: partial.into_term(),
+                    }],
+                    vec![Goal::Backtrack],
+                )?;
             }
 
             (Value::RestVariable(symbol), _) => {
@@ -1035,28 +981,69 @@ impl PolarVirtualMachine {
                 }
             }
 
-            (
-                Value::ExternalInstance(left_instance),
-                Value::Pattern(Pattern::Instance(right_literal)),
-            ) => {
+            (Value::InstanceLiteral(_), _) => {
+                panic!("How did an instance literal get here???");
+            }
+
+            (Value::List(left), Value::List(right)) => {
+                self.unify_lists(left, right, |(left, right)| Goal::Isa {
+                    left: left.clone(),
+                    right: right.clone(),
+                })?;
+            }
+
+            (Value::Dictionary(left), Value::Pattern(Pattern::Dictionary(right))) => {
+                // Check that the left is more specific than the right.
+                let left_fields: HashSet<&Symbol> = left.fields.keys().collect();
+                let right_fields: HashSet<&Symbol> = right.fields.keys().collect();
+                if !right_fields.is_subset(&left_fields) {
+                    return self.push_goal(Goal::Backtrack);
+                }
+
+                // For each field on the right, isa its value against the corresponding value on
+                // the left.
+                for (k, v) in right.fields.iter() {
+                    let left = left
+                        .fields
+                        .get(&k)
+                        .expect("left fields should be a superset of right fields")
+                        .clone();
+                    self.push_goal(Goal::Isa {
+                        left,
+                        right: v.clone(),
+                    })?
+                }
+            }
+
+            (_, Value::Pattern(Pattern::Dictionary(right))) => {
+                // For each field in the dict, look up the corresponding field on the instance and
+                // then isa them.
+                for (field, right_value) in right.fields.iter() {
+                    let left_value = self.kb.read().unwrap().gensym("isa_value");
+                    let call_id = self.new_call_id(&left_value);
+                    let lookup = Goal::LookupExternal {
+                        instance: left.clone(),
+                        call_id,
+                        field: right_value.clone_with_value(Value::String(field.0.clone())),
+                        check_errors: false,
+                    };
+                    let isa = Goal::Isa {
+                        left: left.clone_with_value(Value::Variable(left_value)),
+                        right: right_value.clone(),
+                    };
+                    self.append_goals(vec![lookup, isa])?;
+                }
+            }
+
+            (_, Value::Pattern(Pattern::Instance(right_literal))) => {
                 // Check fields
                 self.push_goal(Goal::Isa {
-                    left: left.clone_with_value(Value::ExternalInstance(left_instance.clone())),
+                    left: left.clone(),
                     right: right.clone_with_value(Value::Pattern(Pattern::Dictionary(
                         right_literal.fields.clone(),
                     ))),
                 })?;
                 // Check class
-                self.push_goal(Goal::IsaExternal {
-                    instance: left.clone(),
-                    literal: right_literal.clone(),
-                })?;
-            }
-
-            (_, Value::Pattern(Pattern::Instance(right_literal))) => {
-                if !right_literal.fields.is_empty() {
-                    return self.backtrack();
-                }
                 self.push_goal(Goal::IsaExternal {
                     instance: left.clone(),
                     literal: right_literal.clone(),

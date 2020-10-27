@@ -1245,7 +1245,7 @@ impl PolarVirtualMachine {
             term: term.clone(),
         }]]);
 
-        Ok(QueryEvent::Next {
+        Ok(QueryEvent::NextExternal {
             call_id,
             term: term.clone(),
         })
